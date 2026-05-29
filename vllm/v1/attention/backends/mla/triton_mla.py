@@ -309,7 +309,7 @@ class TritonMLAImpl(MLACommonImpl[MLACommonMetadata]):
                 q.stride(0), q.stride(1), bt.stride(0), o.stride(0), o.stride(1),
                 lse.stride(0),
                 L=self.kv_lora_rank, RP=self.qk_rope_head_dim, NB=NB, REC=REC,
-                SCALE_OFF=SC, ZP_OFF=ZP, ROPE_OFF=RO, PAGE=PAGE, BLOCK_N=32,
+                SCALE_OFF=SC, ZP_OFF=ZP, ROPE_OFF=RO, PAGE=PAGE, BLOCK_N=64,
             )
             return o, lse
 
