@@ -5,12 +5,11 @@
 
 
 
-<table border="0" cellspacing="0" cellpadding="0">
-  <tr>
-    <td><img src="imgs/logo_600.png" alt="KVarN Logo" width="160"></td>
-    <td style="vertical-align: middle;"><h1>KVarN: Variance-Normalized KV-Cache Quantization for vLLM</h1></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="imgs/logo_600.png" alt="KVarN" width="520">
+</p>
+
+<h3 align="center">Variance-Normalized KV-Cache Quantization for vLLM</h3>
 
 
 
