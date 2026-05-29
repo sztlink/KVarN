@@ -675,35 +675,20 @@ class KVarNAttentionImpl(AttentionImpl["KVarNMetadata"]):
 
         # Pool: fixed size, per-instance because each layer holds unique K/V.
         if self._tail_K_pool is None:
-            # Peak live slots in a mixed prefill+decode step:
-            #   • every active seq's sink + in-progress tail        → 2·max_num_seqs
-            #   • every block written by chunked prefills this step → up to
-            #     max_num_batched_tokens / group (full blocks not yet flushed)
-            # The decode-only bound (2·max_num_seqs) underflows during bursty
-            # serving where many requests prefill simultaneously → "pool
-            # exhausted". Size for the mixed-batch peak.
-            group = cfg.group
-            prefill_blocks = (self._max_num_batched_tokens + group - 1) // group
-            naive = 2 * self._max_num_seqs + prefill_blocks + 32
-
-            # DECOUPLE pool size from max_num_seqs. Sizing the pool to 2·mns
-            # over-provisions when actual concurrency is memory-bound below mns
-            # (long context) — empirically that dropped 2-bit throughput 0.99x→
-            # 0.88x FP16 and cut effective capacity 4.36x→2.75x at seq 8192.
-            # Cap pool memory at a fraction of total GPU memory (default 8%);
-            # the pool is per-layer fp16 (sink + tail), one slot =
-            # group · num_kv_heads · head_dim · 4 bytes (K+V fp16). User can
-            # pin exactly via KVARN_POOL_SLOTS for precise tuning.
+            # Size the pool to the structural peak for the *capped* concurrency:
+            # sink + in-progress tail per active request, plus the full blocks a
+            # chunked prefill can touch. max_num_seqs has already been clamped in
+            # the platform's check_and_update_config so this peak fits the pool
+            # memory budget — making the pool both exhaustion-safe (the scheduler
+            # can never exceed it) and OOM-safe (it is <= the budget). No
+            # per-model tuning; KVARN_POOL_SLOTS still pins the count exactly.
             env_slots = int(os.environ.get("KVARN_POOL_SLOTS", "0"))
             if env_slots > 0:
                 pool_size = max(env_slots, 64)
             else:
-                frac = float(os.environ.get("KVARN_POOL_MEM_FRAC", "0.08"))
-                total_bytes = torch.cuda.get_device_properties(device).total_memory
-                slot_bytes_per_layer = group * self.num_kv_heads * cfg.head_dim * 4
-                cap = int(total_bytes * frac
-                          / (slot_bytes_per_layer * max(self._num_hidden_layers, 1)))
-                pool_size = max(min(naive, max(cap, 64)), 64)
+                pool_size = cfg.pool_slots(
+                    self._max_num_seqs, self._max_num_batched_tokens
+                )
             self._tail_K_pool = torch.zeros(
                 pool_size, cfg.group, self.num_kv_heads, cfg.head_dim,
                 dtype=torch.float16, device=device,

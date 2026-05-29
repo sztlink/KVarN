@@ -248,6 +248,44 @@ class CudaPlatformBase(Platform):
             )
             scheduler_config.disable_chunked_mm_input = True
 
+        # KVarN keeps a fixed-size fp16 tail pool (sink + in-progress tile per
+        # active request, per layer). Its size bounds peak concurrency, so cap
+        # max_num_seqs at what a bounded pool budget supports. This makes the
+        # pool both OOM-safe (≤ budget) and exhaustion-safe (scheduler cannot
+        # exceed it), with no per-model tuning. Tune via KVARN_POOL_MEM_FRAC.
+        cache_config = vllm_config.cache_config
+        cache_dtype = getattr(cache_config, "cache_dtype", None)
+        if (
+            model_config is not None
+            and isinstance(cache_dtype, str)
+            and cache_dtype.startswith("kvarn_")
+            and torch.cuda.is_available()
+        ):
+            from vllm.model_executor.layers.quantization.kvarn.config import (
+                KVarNConfig,
+            )
+
+            kvarn_cfg = KVarNConfig.from_cache_dtype(
+                cache_dtype, model_config.get_head_size()
+            )
+            total_gpu_bytes = torch.cuda.get_device_properties(0).total_memory
+            supported = kvarn_cfg.max_supported_seqs(
+                total_gpu_bytes=total_gpu_bytes,
+                num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+                num_layers=model_config.get_num_layers(parallel_config),
+                max_num_batched_tokens=scheduler_config.max_num_batched_tokens,
+            )
+            if scheduler_config.max_num_seqs > supported:
+                logger.warning(
+                    "KVarN (%s): capping max_num_seqs %d -> %d to fit the fp16 "
+                    "tail pool within its memory budget (set KVARN_POOL_MEM_FRAC "
+                    "higher to allow more concurrency at the cost of KV capacity).",
+                    cache_dtype,
+                    scheduler_config.max_num_seqs,
+                    supported,
+                )
+                scheduler_config.max_num_seqs = supported
+
     @classmethod
     def get_current_memory_usage(
         cls, device: torch.types.Device | None = None

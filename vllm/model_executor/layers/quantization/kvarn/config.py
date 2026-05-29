@@ -138,6 +138,51 @@ class KVarNConfig:
     def v_zp_offset(self) -> int:
         return self.v_s_row_offset + self.group * 2
 
+    # ── fp16 tail-pool sizing ────────────────────────────────────────────────
+    # KVarN keeps a fixed-size fp16 side buffer ("tail pool") because a tile
+    # cannot be quantized until its `group` tokens all exist. Per active request,
+    # per layer, it holds two fp16 blocks: the permanent attention-sink block and
+    # the in-progress tail. The pool must be pre-allocated at a fixed size (CUDA
+    # graphs), so its size bounds how many requests can run concurrently. Rather
+    # than size the pool to an arbitrary `max_num_seqs` (which can OOM at large
+    # values or exhaust if under-sized), we pick a memory budget and cap the
+    # scheduler's concurrency to what that budget supports — see
+    # `max_supported_seqs` and the platform's check_and_update_config.
+    POOL_MEM_FRAC_DEFAULT = 0.08
+
+    def _slot_bytes_per_layer(self, num_kv_heads: int) -> int:
+        """Bytes for one pool slot in one layer: group·heads·head_dim fp16,
+        for K and V combined (2 bytes/elem × 2 tensors = 4)."""
+        return self.group * num_kv_heads * self.head_dim * 4
+
+    def pool_slots(self, max_num_seqs: int, max_num_batched_tokens: int) -> int:
+        """Structural peak of fp16 pool slots needed in a single step:
+        sink + in-progress tail per active request (2·max_num_seqs), plus the
+        full blocks a chunked prefill can touch before flushing, plus headroom.
+        With concurrency capped (see max_supported_seqs) this fits the budget."""
+        prefill_blocks = (max_num_batched_tokens + self.group - 1) // self.group
+        return max(2 * max_num_seqs + prefill_blocks + 32, 64)
+
+    def max_supported_seqs(
+        self,
+        total_gpu_bytes: int,
+        num_kv_heads: int,
+        num_layers: int,
+        max_num_batched_tokens: int,
+        frac: float | None = None,
+    ) -> int:
+        """Largest max_num_seqs whose pool fits in `frac` of GPU memory.
+
+        Inverts `pool_slots`: max_slots = budget / (slot_bytes · layers), then
+        solve 2·S + prefill + 32 ≤ max_slots for S. Always ≥ 1."""
+        if frac is None:
+            frac = float(os.environ.get(
+                "KVARN_POOL_MEM_FRAC", str(self.POOL_MEM_FRAC_DEFAULT)))
+        slot_bytes = self._slot_bytes_per_layer(num_kv_heads) * max(num_layers, 1)
+        max_slots = int(total_gpu_bytes * frac / slot_bytes)
+        prefill_blocks = (max_num_batched_tokens + self.group - 1) // self.group
+        return max(1, (max_slots - prefill_blocks - 32) // 2)
+
     @staticmethod
     def get_boundary_skip_layers(num_layers: int, n: int = 2) -> list[str]:
         """First-N + last-N transformer layer indices as strings, suitable
