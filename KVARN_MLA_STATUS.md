@@ -233,3 +233,14 @@ incl. chunked gather) ran with NO errors -- the full pipeline (prefill + decode)
 is correct and stable for realistic prompts. Consistent with the decode-only
 burst (0.65x). Confirms: kernel-optimized KVarN-MLA is correct + stable + ~0.67x
 FP16 speed at ~2.8x capacity on V2-Lite (not KV-bound -> speed<1x as expected).
+
+## Update 8: batch=1 latency -> KV-splits NOT worth it (kernel work done)
+batch=1, ctx=1024, 256 decode steps:
+  FP16:       17.32 ms/tok (58 tok/s)
+  KVarN-MLA:  20.23 ms/tok (49 tok/s) = 0.86x FP16 (only 17% slower)
+At batch=1 the decode-attention kernel is a SMALL fraction of per-token latency
+(MoE + dense layers dominate, identical for both paths), so KVarN is already
+0.86x FP16. KV-splits would optimize only that small attention slice -> negligible
+gain, not worth the stage1/stage2 complexity. At high batch (burst) occupancy is
+already saturated (B*H programs). => BLOCK_N tiling was the right + sufficient
+kernel optimization. KV-splits abandoned (empirically low-value). KERNEL DONE.
