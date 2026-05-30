@@ -349,3 +349,19 @@ near-lossless 4-bit) is full-KVarN-EQUIVALENT. Building the eager-flush Sinkhorn
 machinery would add large complexity + break clean hot-path capture for ~0 gain.
 RECOMMENDATION: ship the CUDA-graph RTN backend; optionally add Hadamard (graph-
 safe static matmul, +0.0001, gives the "KVarN rotation"); skip Sinkhorn on MLA.
+
+## Update 14: COMMIT to full method. Phase 1 (tile math) VALIDATED.
+User decision: implement the real KVarN method (Hadamard+Sinkhorn+RTN), not the
+RTN shortcut, with CUDA graphs. Plan = port the proven kvarn_attn.py backend
+(chunked Sinkhorn flush + fp16 sink/tail + capture-correct metadata + graph-safe
+decode) to MLA. Latent = K-path (per-channel quant). Sinkhorn flush is EAGER ->
+use shape-agnostic variance_normalize([512,128]) (the Triton sinkhorn hard-codes
+128x128; not needed for the eager flush). Graph-safe decode = rotated absorbed-
+query . dequant'd rotated int4 tiles + fp16 tail.
+Algebra guarantee: <q, unrotate(d)> == <q@H, d> (orthonormal H) -> store rotated
+quantized tile + rotate query; no un-rotate in the hot kernel.
+Phase 1 validated on REAL V2-Lite latent (kvarn_mla_tile_validate.py):
+  4-bit: score_cos 0.99744, attn_out_cos 0.99984 (near-lossless)
+  2-bit: score_cos 0.93135, attn_out_cos 0.99153
+Tasks #47 (done) / #48 (tile cache+flush store) / #49 (graph-safe decode+graphs).
+Phases 2-3 = large multi-component port of the kvarn_attn machinery to MLA.
