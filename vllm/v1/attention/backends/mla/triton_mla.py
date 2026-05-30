@@ -430,6 +430,13 @@ class TritonMLAImpl(MLACommonImpl[MLACommonMetadata]):
                     Krope_parts.append(krope)
                 Krot = torch.cat(Krot_parts, 0)              # [slen, R] rotated
                 Krope = torch.cat(Krope_parts, 0)            # [slen, ROPE]
+                import os as _o2
+                if _o2.environ.get("KVARN_DBG2") and not getattr(self, "_dbg2p", 0) > 12:
+                    self._dbg2p = getattr(self, "_dbg2p", 0) + 1
+                    bids = [int(row[j].item()) for j in range(nblk)]
+                    staged = [b2 in self._kvarn_stage for b2 in bids]
+                    print(f"[DBG2] b={b} slen={slen} nblk={nblk} norm={Krot.norm():.1f} "
+                          f"bids={bids} staged={staged}", flush=True)
                 qb = q[b].float()                            # [Hh, R+ROPE]
                 q_lat_rot = qb[:, :R] @ H
                 q_rope = qb[:, R:R + ROPE]
