@@ -20,6 +20,22 @@ from vllm.triton_utils import triton
 import triton.language as tl
 
 
+def kvarn_mla_tile_layout(kv_lora_rank: int, rope_dim: int, group: int, bits: int):
+    """Per-BLOCK tile record byte layout for the full-method KVarN-MLA cache
+    (K-path: per-channel scale/zp + per-token s_row, packed token-major, fp16
+    rope). One record = ``group`` tokens. Returns
+    (NB, SC, ZP, SR, RP, REC, head_size) where head_size = REC // group."""
+    R = kv_lora_rank
+    nb = group * R * bits // 8          # packed latent
+    sc = nb                             # scale[R] fp16 (per-channel)
+    zp = sc + R * 2
+    sr = zp + R * 2                     # s_row[group] fp16 (per-token)
+    rp = sr + group * 2                 # rope group*rope_dim fp16
+    rec = rp + group * rope_dim * 2
+    assert rec % group == 0, f"tile rec {rec} not divisible by group {group}"
+    return nb, sc, zp, sr, rp, rec, rec // group
+
+
 def kvarn_mla_layout(kv_lora_rank: int, rope_dim: int, bits: int):
     """Packed-record byte layout for KVarN-MLA. Fields are 16-byte aligned so the
     decode kernel's gathered fp16 loads (scale/zp/rope, strided by REC) vectorize
