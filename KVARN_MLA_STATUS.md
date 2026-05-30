@@ -365,3 +365,17 @@ Phase 1 validated on REAL V2-Lite latent (kvarn_mla_tile_validate.py):
   2-bit: score_cos 0.93135, attn_out_cos 0.99153
 Tasks #47 (done) / #48 (tile cache+flush store) / #49 (graph-safe decode+graphs).
 Phases 2-3 = large multi-component port of the kvarn_attn machinery to MLA.
+
+## Update 15: Phase 2 tile pack/unpack VALIDATED (foundation de-risked)
+Per-block tile record (kvarn_mla_tilepack.py), GROUP=128, R=512, ROPE=64, 4-bit:
+  packed 32768 + scale[R]1024 + zp[R]1024 + s_row[GROUP]256 + rope 16384 = 51456 B
+  = 402 B/tok vs 1152 fp16 -> 2.87x. score_cos=0.99802, rope exact.
+Sinkhorn axes (variance_normalize on [R,GROUP]): s_row[R,1]=per-channel (absorbed
+into scale/zp), s_col[1,GROUP]=per-token (stored as the row scale). Dequant:
+deq_rot[t,c]=(q[t,c]*scale_abs[c]+zp_abs[c])*s_col[t] -> rotated frame; attention
+dots H@q with it (no un-rotate). Both math foundations (Phase 1 attn-equivalence,
+Phase 2 tile pack) validated on the real latent.
+REMAINING (the heavy backend plumbing, mirrors kvarn_attn.py): do_kv_cache_update
+fp16 buffering + 128-tok flush via pack_tile; fp16 sink/tail; tile-aware decode
+kernel (int4 tiles + fp16 tail, online-softmax); capture-correct metadata for
+CUDA graphs. Large multi-step port; foundations now de-risked.
