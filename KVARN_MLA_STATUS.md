@@ -379,3 +379,17 @@ REMAINING (the heavy backend plumbing, mirrors kvarn_attn.py): do_kv_cache_updat
 fp16 buffering + 128-tok flush via pack_tile; fp16 sink/tail; tile-aware decode
 kernel (int4 tiles + fp16 tail, online-softmax); capture-correct metadata for
 CUDA graphs. Large multi-step port; foundations now de-risked.
+
+## Update 16: User DECISION = build full method. Dequant Triton kernel validated.
+Decision: build the full tile-based Hadamard+Sinkhorn+CUDA-graph KVarN-MLA backend
+(heard the caveat that it's ~inert on MLA; proceeding anyway). Architecture per
+the user's FlashAttention guidance: persistent kvarn TILE cache -> per-step Triton
+DEQUANT kernel -> fp16 scratch (rotated latent + rope) -> STOCK TritonMLA decode
+(rotated query, H^T folded into W_UV). No fused dequant+attn kernel; reuses the
+tuned decode (also fixes the slow 0.65x).
+Validated stateless units (all on real latent): Phase1 method (attn cos 0.99984),
+Phase2 tile pack (2.87x, score 0.99802), Phase3-A decode-ref (cos 0.99971),
+Phase3 dequant Triton kernel vs unpack_tile (cos 1.0, lat 2.2e-4, rope exact).
+REMAINING = stateful backend plumbing: tile-store buffering + 128-tok flush
+(do_kv_cache_update), fp16 sink/tail + pool, paged fp16 scratch + dequant wiring,
+capture-correct metadata. Port of kvarn_attn machinery to MLA; multi-iteration.
