@@ -13,11 +13,11 @@
 
 
 
-> ⚡️ **Near-lossless KV-cache compression for vLLM.** Fit far longer contexts, sustain higher long-context throughput, and keep FP16-level accuracy.
+> ⚡️ **Built for agentic and long-context workloads.** KVarN delivers **3-5x more KV-cache capacity** and **up to ~1.3x the throughput** of FP16, so you fit far longer contexts and serve more concurrent requests on the same GPU, with FP16-level accuracy.
 
-> 💡 **Want longer context or more concurrent requests on the same GPU?** KVarN shrinks the KV cache by 3-5x while preserving model quality, even on reasoning models.
+> 💡 **More context and concurrency, same GPU.** KVarN shrinks the KV cache by 3-5x while preserving model quality, even on reasoning models.
 
-> 🔌 **Drop-in.** It is a native vLLM attention backend: add one flag, no model changes, no calibration.
+> 🔌 **Calibration-free, plug-and-play with vLLM.** A native vLLM attention backend: add one flag, no model changes, no calibration.
 
 ---
 
@@ -31,7 +31,7 @@ quantization also tends to **cost accuracy**. Losing both speed *and* quality is
 the main reason KV-cache quantization is rarely turned on in production.
 
 **KVarN is built to keep both.** On Qwen3-32B (AIME25, 16K-context burst, TP=2) it
-matches FP16 accuracy *and* throughput while delivering ~4× the KV-cache capacity:
+matches FP16 accuracy and **beats its throughput** while delivering ~4× the KV-cache capacity:
 
 <p align="center">
   <img src="imgs/pareto_qwen3-32b.png" alt="KVarN vs FP16 vs TurboQuant: accuracy, throughput and capacity" width="660">
