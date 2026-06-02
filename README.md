@@ -13,9 +13,9 @@
 
 
 
-> ⚡️ **Built for agentic and long-context workloads.** KVarN delivers **3-5x more KV-cache capacity** and **up to ~1.3x the throughput** of FP16, so you fit far longer contexts and serve more concurrent requests on the same GPU, with FP16-level accuracy.
+> ⚡️ **Built for agentic and long-context workloads.**
 
-> 💡 **More context and concurrency, same GPU.** KVarN shrinks the KV cache by 3-5x while preserving model quality, even on reasoning models.
+> 💡 KVarN delivers **3-5x more KV-cache capacity** and **up to ~1.3x the throughput** of FP16, so you fit far longer contexts and serve more concurrent requests on the same GPU, with FP16-level accuracy.
 
 > 🔌 **Calibration-free, plug-and-play with vLLM.** A native vLLM attention backend: add one flag, no model changes, no calibration.
 
