@@ -57,6 +57,7 @@ from vllm import LLM, SamplingParams
 
 llm = LLM(
     model="Qwen/Qwen3-32B",
+    dtype="float16",                    # KVarN currently runs in float16
     kv_cache_dtype="kvarn_k4v2_g128",   # enable KVarN
     block_size=128,                     # KVarN tile size
 )
@@ -67,11 +68,12 @@ print(llm.generate("Explain KV-cache quantization in one sentence.",
 Serving works the same way:
 
 ```bash
-vllm serve Qwen/Qwen3-32B --kv-cache-dtype kvarn_k4v2_g128 --block-size 128
+vllm serve Qwen/Qwen3-32B --dtype float16 --kv-cache-dtype kvarn_k4v2_g128 --block-size 128
 ```
 
-> **Note:** the tile / page size is currently fixed at 128 (one vLLM block = one
-> KVarN tile). Support for other page sizes is coming soon.
+> **Note:** KVarN currently runs in `float16` compute (bf16 support is coming),
+> and the tile / page size is fixed at 128 (one vLLM block = one KVarN tile).
+> Support for bf16 and other page sizes is coming soon.
 
 ---
 
