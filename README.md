@@ -11,7 +11,7 @@
 
 > ⚡️ **Built for agentic and long-context workloads.**
 
-> 💡 KVarN delivers **3-5x more KV-cache capacity** and **up to ~1.3x the throughput** of FP16, so you fit far longer contexts and serve more concurrent requests on the same GPU, with FP16-level accuracy.
+> 💡 KVarN delivers **3-5x more KV-cache capacity** and **up to ~1.3x the throughput** of FP16, so you fit far longer contexts and serve more concurrent requests on the same GPU, with **FP16-level accuracy**.
 
 > 🔌 **Calibration-free, plug-and-play with vLLM.** A native vLLM attention backend: add one flag, no model changes, no calibration.
 
@@ -69,6 +69,9 @@ Serving works the same way:
 vllm serve Qwen/Qwen3-32B --kv-cache-dtype kvarn_k4v2_g128 --block-size 128
 ```
 
+> **Note:** the tile / page size is currently fixed at 128 (one vLLM block = one
+> KVarN tile). Support for other page sizes is coming soon.
+
 ---
 
 ## How does KVarN work?
@@ -99,9 +102,6 @@ The shipped preset spends **more bits on keys than values** (`kvarn_k4v2_g128`:
 the strictest accuracy bar, matching FP16, that the most demanding production
 deployments and vLLM require, while still delivering throughput above FP16. The
 bit-widths are fully parameterized internally, so other presets are easy to add.
-
-> **Note:** the tile / page size is currently fixed at 128 (one vLLM block = one
-> KVarN tile). Support for other page sizes is coming soon.
 
 ---
 
