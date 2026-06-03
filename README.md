@@ -110,10 +110,21 @@ deployments and vLLM require, while still delivering throughput above FP16.
 
 ## Citation
 
-KVarN is the official vLLM implementation of our paper, which describes the method
-and the full set of benchmarks.
+KVarN is the official vLLM implementation of our paper:
 
-> 📄 **Paper:** [arXiv:2606.03458](https://arxiv.org/abs/2606.03458)
+> 📄 *KVarN: Variance-Normalized KV-Cache Quantization Mitigates Error Accumulation
+> in Reasoning Tasks* ([arXiv:2606.03458](https://arxiv.org/abs/2606.03458))
+
+If you use KVarN, please cite:
+
+```bibtex
+@article{muller2026kvarn,
+  title   = {KVarN: Variance-Normalized KV-Cache Quantization Mitigates Error Accumulation in Reasoning Tasks},
+  author  = {Muller, Lorenz K. and Bich, Philippe and Boretti, Chiara and Chang, Hyun-Min and Zhuang, Jiawei and Cavigelli, Lukas},
+  journal = {arXiv preprint arXiv:2606.03458},
+  year    = {2026},
+}
+```
 
 ---
 
