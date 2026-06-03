@@ -20,7 +20,7 @@
 
 ---
 
-## Why KVarN?
+## Why KVarN (Variance Normalized KV-Cache)?
 
 > **kvarn** /kvɑːɳ/ &nbsp;·&nbsp; *noun* (Swedish)
 >
@@ -34,7 +34,7 @@ methods buy extra KV-cache capacity but **give up throughput** (TurboQuant repor
 quantization also tends to **cost accuracy**. Losing both speed *and* quality is
 the main reason KV-cache quantization is rarely turned on in production.
 
-**KVarN (Variance Normalized KV-Cache quantization) is built to keep both.** On Qwen3-32B (AIME25, 16K-context burst, TP=2) it
+**KVarN is built to keep both.** On Qwen3-32B (AIME25, 16K-context burst, TP=2) it
 matches FP16 accuracy and **beats its throughput** while delivering ~4× the KV-cache capacity:
 
 <p align="center">
