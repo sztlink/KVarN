@@ -654,6 +654,9 @@ class TritonMLABackend(MLACommonBackend):
         "fp8",
         "fp8_e4m3",
         "kvarn_mla_k4_g128",
+        "kvarn_k4v2_g128",  # alias: on an MLA model the dense KVarN dtype routes
+                            # to the MLA latent-quant path (k4 latent), so users can
+                            # pass the same --kv-cache-dtype on dense and MLA models.
     ]
 
     @classmethod
@@ -745,11 +748,16 @@ class TritonMLAImpl(MLACommonImpl[MLACommonMetadata]):
             self.supports_quant_query_input = False
 
         self._sm_count = current_platform.num_compute_units()
-        self._is_kvarn_mla = str(self.kv_cache_dtype).startswith("kvarn_mla")
-        # CUDA-graph path (KVARN_MLA_GRAPH=1): sparse fp16 tail pool + tensorized
-        # scatter store (graph-safe) + flush-in-builder + dequant->stock decode.
-        # When off, the validated eager dict-staging path runs unchanged.
-        self._kvarn_graph = bool(int(os.environ.get("KVARN_MLA_GRAPH", "0")))
+        # ANY kvarn_ dtype on an MLA model -> KVarN latent quant (the dense
+        # kvarn_attn backend never runs for MLA, so this impl owns all kvarn_
+        # variants). Lets users pass the same --kv-cache-dtype (e.g.
+        # kvarn_k4v2_g128) on dense and MLA models with no code change.
+        self._is_kvarn_mla = str(self.kv_cache_dtype).startswith("kvarn_")
+        # CUDA-graph path: sparse fp16 tail pool + tensorized scatter store
+        # (graph-safe) + flush-in-builder + dequant->stock decode. ON by default
+        # (validated byte-identical to eager + ~8x faster); KVARN_MLA_GRAPH=0
+        # forces the legacy eager dict-staging path.
+        self._kvarn_graph = bool(int(os.environ.get("KVARN_MLA_GRAPH", "1")))
         if self._is_kvarn_mla:
             self._kvarn_bits = 4
             self._kvarn_group = 128

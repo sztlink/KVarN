@@ -260,6 +260,10 @@ class CudaPlatformBase(Platform):
             and isinstance(cache_dtype, str)
             and cache_dtype.startswith("kvarn_")
             and not cache_dtype.startswith("kvarn_mla")  # MLA path: separate machinery
+            # MLA models route ANY kvarn_ dtype (incl. kvarn_k4v2_g128) to the
+            # MLA latent-quant path, which has its own pool — the dense fp16
+            # tail-pool sizing/skip-layers below must NOT run for them.
+            and not getattr(model_config, "use_mla", False)
         ):
             from vllm.model_executor.layers.quantization.kvarn.config import (
                 KVarNConfig,

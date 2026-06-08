@@ -986,7 +986,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
         # per-channel scale/zp + per-token s_row + fp16 rope. head_size =
         # REC/group (uint8) sizes the paged cache to the compressed tile; block
         # size is forced to the tile group (128). Compute uses kv_lora_rank.
-        if str(self.kv_cache_dtype).startswith("kvarn_mla"):
+        if str(self.kv_cache_dtype).startswith("kvarn_"):  # any kvarn_ -> MLA latent tile
             from vllm.v1.attention.backends.mla.triton_mla import (
                 kvarn_mla_tile_layout,
             )
