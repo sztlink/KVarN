@@ -458,7 +458,12 @@ class Worker(WorkerBase):
         # capped max_num_seqs to this budget, so the reservation is small. Sized
         # per rank (per-rank kv heads) to match the actual allocation.
         cache_dtype = self.cache_config.cache_dtype
-        if isinstance(cache_dtype, str) and cache_dtype.startswith("kvarn_"):
+        # Dense-KVarN fp16 tail-pool reservation. Skip for MLA models: they route
+        # any kvarn_ dtype to the MLA latent path (its own pool), so this dense
+        # reservation must not run for them.
+        if (isinstance(cache_dtype, str) and cache_dtype.startswith("kvarn_")
+                and not cache_dtype.startswith("kvarn_mla")
+                and not getattr(self.vllm_config.model_config, "use_mla", False)):
             from vllm.model_executor.layers.quantization.kvarn.config import (
                 KVarNConfig,
             )

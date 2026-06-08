@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import os
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import math
@@ -64,6 +65,9 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbeddingBase):
             and current_platform.is_cuda()
             and has_flashinfer()
             and head_size in [64, 128, 256, 512]
+            # Local dev: FlashInfer's rope JIT fails its arch check on sm_120
+            # (Blackwell). Allow forcing the native PyTorch rope path.
+            and os.environ.get("VLLM_DISABLE_FLASHINFER_ROPE", "0") != "1"
         )
         super().__init__(
             head_size,

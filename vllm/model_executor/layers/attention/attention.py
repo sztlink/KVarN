@@ -599,7 +599,7 @@ class Attention(nn.Module, AttentionLayerBase):
                 dtype=self.kv_cache_torch_dtype,
                 tq_slot_size=tq_config.slot_size_aligned,
             )
-        elif self.kv_cache_dtype.startswith("kvarn_"):
+        elif self.kv_cache_dtype.startswith("kvarn_") and not self.kv_cache_dtype.startswith("kvarn_mla"):
             from vllm.model_executor.layers.quantization.kvarn.config import (
                 KVarNConfig,
             )

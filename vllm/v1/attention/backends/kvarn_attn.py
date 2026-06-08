@@ -171,7 +171,7 @@ class KVarNAttentionBackend(AttentionBackend):
     def supports_kv_cache_dtype(cls, kv_cache_dtype: CacheDType | None) -> bool:
         if kv_cache_dtype is None:
             return False
-        return kv_cache_dtype.startswith("kvarn_")
+        return kv_cache_dtype.startswith("kvarn_") and not kv_cache_dtype.startswith("kvarn_mla")
 
     @classmethod
     def supports_head_size(cls, head_size: int) -> bool:
