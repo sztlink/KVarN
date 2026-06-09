@@ -303,20 +303,37 @@ class CudaPlatformBase(Platform):
             # do NOT initialize a CUDA context in the parent here — doing so would
             # force `spawn` multiprocessing for tensor parallelism.
             total_gpu_bytes = cls.get_device_total_memory()
+            # Weight-aware pool budget (issue #15): size the pool from the
+            # post-weight usable envelope (util·total − weights) rather than a
+            # fixed slice of total memory, so a small model on a big card gets a
+            # large pool / high concurrency instead of being strangled while the
+            # KV cache sits near-empty. weight_bytes is read off the checkpoint
+            # files on disk (no CUDA context); if unreadable, max_supported_seqs
+            # falls back to the legacy fraction-of-total budget.
+            weight_bytes = kvarn_cfg.estimate_weight_bytes(
+                model_config.model,
+                tensor_parallel_size=parallel_config.tensor_parallel_size,
+            )
             supported = kvarn_cfg.max_supported_seqs(
                 total_gpu_bytes=total_gpu_bytes,
                 num_kv_heads=model_config.get_num_kv_heads(parallel_config),
                 num_layers=model_config.get_num_layers(parallel_config),
                 max_num_batched_tokens=scheduler_config.max_num_batched_tokens,
+                gpu_memory_utilization=cache_config.gpu_memory_utilization,
+                weight_bytes=weight_bytes,
             )
             if scheduler_config.max_num_seqs > supported:
+                _budget_kind = ("post-weight usable memory"
+                                if weight_bytes is not None else "total GPU memory")
                 logger.warning(
-                    "KVarN (%s): capping max_num_seqs %d -> %d to fit the fp16 "
-                    "tail pool within its memory budget (set KVARN_POOL_MEM_FRAC "
-                    "higher to allow more concurrency at the cost of KV capacity).",
+                    "KVarN (%s): capping max_num_seqs %d -> %d so the fp16 tail "
+                    "pool fits its budget (a share of %s). To raise it: increase "
+                    "--gpu-memory-utilization or set KVARN_POOL_MEM_FRAC higher "
+                    "(the pool, not KV capacity, is the limit here).",
                     cache_dtype,
                     scheduler_config.max_num_seqs,
                     supported,
+                    _budget_kind,
                 )
                 scheduler_config.max_num_seqs = supported
 
