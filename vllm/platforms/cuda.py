@@ -269,16 +269,15 @@ class CudaPlatformBase(Platform):
                 KVarNConfig,
             )
 
-            # KVarN's Sinkhorn/decode kernels are specialized to head_dim=128
-            # (the variance-normalization tile is 128x128). Fail fast with a
-            # clear message rather than crashing deep in a kernel with a shape
-            # error if the model uses a different head dimension.
+            # KVarN supports head_dim 128 / 256 / 512 (the variance-normalization
+            # tile is head_dim x group). Fail fast with a clear message rather
+            # than crashing deep in a kernel with a shape error otherwise.
             head_size = model_config.get_head_size()
-            if head_size != 128:
+            if head_size not in (128, 256, 512):
                 raise ValueError(
-                    f"{cache_dtype} requires head_dim=128, but this model has "
-                    f"head_dim={head_size}. KVarN currently supports head_dim=128 "
-                    f"only; use a different --kv-cache-dtype for this model."
+                    f"{cache_dtype} requires head_dim in (128, 256, 512), but this "
+                    f"model has head_dim={head_size}; use a different "
+                    f"--kv-cache-dtype for this model."
                 )
 
             # KVarN is a full-attention KV quantizer; its decode path does not
@@ -287,7 +286,14 @@ class CudaPlatformBase(Platform):
             # Mistral, gpt-oss, ...) stay correct — KVarN compresses only the
             # full-attention layers. This is a no-op for full-attention models.
             skip_layers = cache_config.kv_cache_dtype_skip_layers
-            if "sliding_window" not in skip_layers:
+            _quant_sliding = os.environ.get("KVARN_QUANT_SLIDING") == "1"
+            if _quant_sliding:
+                # Experimental: quantize sliding-window layers too (window>group).
+                while "sliding_window" in skip_layers:
+                    skip_layers.remove("sliding_window")
+                logger.info("KVarN (%s): KVARN_QUANT_SLIDING=1 — quantizing "
+                            "sliding-window layers too.", cache_dtype)
+            elif "sliding_window" not in skip_layers:
                 skip_layers.append("sliding_window")
                 logger.info(
                     "KVarN (%s): sliding-window attention layers (if any) are "
