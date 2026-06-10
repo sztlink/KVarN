@@ -113,6 +113,49 @@ The win is **2.77× KV capacity at ~parity accuracy**. MLA's
 latent is already tiny so KVarN is not a latency play there, but it lets you fit
 far more concurrent context in the same memory. 
 
+### Hybrid models (Mamba / linear-attention)
+
+KVarN supports **hybrid models** that interleave linear-attention or Mamba layers
+with standard full-attention layers, such as Qwen3.6-27B. KVarN compresses only the
+full-attention layers (the layers that hold a KV cache); the linear-attention and
+Mamba layers keep their own recurrent state and are left untouched. The fp16 decode
+pool is sized from the full-attention layer count only, so a hybrid model loads with
+the default flags, no manual pool tuning.
+
+```bash
+vllm serve Qwen/Qwen3.6-27B \
+    --dtype bfloat16 \
+    --kv-cache-dtype kvarn_k4v2_g128 \
+    --block-size 128
+```
+
+The KV-cache capacity gain applies to the full-attention layers (where the cache
+lives), so a hybrid model fits far more concurrent context in the same memory at near
+parity accuracy.
+
+### Speculative decoding (MTP and draft models)
+
+KVarN is compatible with **speculative decoding**, including Multi-Token Prediction
+(MTP). Pass `--speculative-config` exactly as you normally would, alongside the KVarN
+`--kv-cache-dtype`:
+
+```bash
+vllm serve Qwen/Qwen3.6-27B \
+    --dtype bfloat16 \
+    --kv-cache-dtype kvarn_k4v2_g128 \
+    --block-size 128 \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+```
+
+The speculative verify step attends over the full cached context (KVarN reconstructs
+it from the quantized cache), and a block is committed to the quantized cache only
+once all of its tokens are accepted, so rejected draft tokens never corrupt history.
+
+> **Note (weight quantization):** KVarN quantizes the KV cache independently of the
+> model weights, so it composes with weight-quantized checkpoints (for example
+> `compressed-tensors` / AWQ INT4) and MTP at the same time. Validated on Qwen3.6-27B
+> in both `bfloat16` and AWQ INT4.
+
 ---
 
 ## How does KVarN work?
