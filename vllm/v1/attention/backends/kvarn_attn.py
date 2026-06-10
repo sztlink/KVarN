@@ -228,6 +228,13 @@ class KVarNMetadata(AttentionMetadata):
     is_prefill: bool = False
     num_decodes: int = 0
     num_decode_tokens: int = 0
+    # True if any multi-query request (query_len > 1) also has cached context
+    # (seq_len > query_len): a speculative-decode verify step or a chunked-
+    # prefill continuation. Such steps MUST attend over the cached K/V, so they
+    # route to the context-aware path rather than _prefill_first_chunk (which
+    # assumes a fresh prompt, cached_len == 0). Computed once in build() from
+    # CPU arrays (no GPU sync).
+    has_cached_multiquery: bool = False
     # Precomputed once per batch in the metadata builder and reused across all
     # 28+ layer forward calls. Saves 28× .tolist() syncs per decode token.
     seq_lens_cpu: list[int] | None = None
@@ -268,12 +275,14 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
         self._layer_names = list(layer_names)
         self._layer_names_set = set(self._layer_names)
         self._group_key = tuple(sorted(self._layer_names))
-        # Stage α-2: per-request fill tracking for flush detection, keyed by
-        # the sink block id so request identity survives batch reordering.
-        #   _prev_seq_len_by_sink[sink]  = seq_len at the previous step
-        #                                  (= tokens currently in the pool)
+        # Stage α-2: per-request flush tracking, keyed by the sink block id so
+        # request identity survives batch reordering.
         #   _flush_watermark_by_sink[sink] = next block index to flush
-        self._prev_seq_len_by_sink: dict[int, int] = {}
+        # The "tokens currently in the pool" count is derived per step from the
+        # committed (cached) length (seq_len - this step's query tokens), NOT
+        # carried across steps — that keeps it correct under speculative
+        # decoding, where a step appends a variable, partially-rejected number
+        # of tokens. See the flush-detection block in build().
         self._flush_watermark_by_sink: dict[int, int] = {}
 
         # Max model length (for the fixed FA grid bound + max_blocks_per_req).
@@ -305,6 +314,18 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
         # avoid an extra GPU->CPU sync per step (issue #15 build-overhead).
         _slc = getattr(cam, "seq_lens_cpu", None)
         seq_lens_cpu = (_slc.tolist() if _slc is not None else cam.seq_lens.tolist())
+        # Per-request query length this step (already on CPU; no extra sync).
+        # query_len > 1 for prefill chunks and for speculative-decode verify
+        # steps (MTP / draft). Used by flush detection to compute the COMMITTED
+        # token count (seq_len - query_len) so speculative tokens that may still
+        # be rejected are never quantized into the permanent int4 cache.
+        _qsl = getattr(cam, "query_start_loc_cpu", None)
+        if _qsl is not None:
+            _qsl_l = _qsl.tolist()
+            query_lens_cpu = [_qsl_l[i + 1] - _qsl_l[i]
+                              for i in range(len(_qsl_l) - 1)]
+        else:
+            query_lens_cpu = [1] * len(seq_lens_cpu)
         # block_table as a numpy 2-D array (C-backed, lazy element access) rather
         # than .tolist(): the full B×max_blocks nested-list build was ~7 ms/step
         # at B=256 and dominated build() once the flush was vectorized (issue #15).
@@ -419,11 +440,22 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
             # CRITICAL timing: token (k+1)*GROUP-1 (the one that completes
             # block k) is written during THIS step's do_kv_cache_update, which
             # runs AFTER the builder. So at builder time the pool only holds
-            # tokens written through the PREVIOUS step. We therefore flush
-            # against `prev_sl` (= pool token count now), never `sl`.
+            # tokens already committed before this step. That committed count is
+            # `seq_len - query_len` (this step's query tokens are written later),
+            # i.e. exactly num_computed_tokens. We flush against THAT, never the
+            # full `sl`.
             #
-            # _prev_seq_len_by_sink[sink] holds the seq_len reported at the
-            # previous step = exactly the number of tokens now in the pool.
+            # Why not the full `sl` (or the previous step's `sl`): under
+            # speculative decoding (MTP / draft) a step appends `num_spec+1`
+            # tokens at once and seq_len jumps by a VARIABLE accepted amount,
+            # with later-rejected speculative tokens sitting in the pool until
+            # they are overwritten next step. Quantizing a block to int4 is
+            # PERMANENT, so flushing a block that still contains a speculative
+            # (rejectable) token freezes wrong KV → progressive corruption →
+            # repetition-collapse / garbage. Using the committed length means we
+            # only ever quantize blocks whose tokens are all accepted. For
+            # ordinary single-token decode `seq_len - query_len` equals the
+            # previous step's seq_len, so this is behaviourally identical there.
             # _flush_watermark_by_sink[sink] = next block index to flush.
             flush_block_ids: list[int] = []
             seen_sinks: set[int] = set()
@@ -436,8 +468,11 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
                 if sink_bid < 0 or sl <= 0:
                     continue
                 seen_sinks.add(sink_bid)
-                prev_sl = self._prev_seq_len_by_sink.get(sink_bid, 0)
-                complete_in_pool = prev_sl // GROUP    # blocks 0..that-1 fully in pool
+                q_len = query_lens_cpu[b] if b < len(query_lens_cpu) else 1
+                committed_len = sl - q_len            # tokens already in pool & accepted
+                if committed_len < 0:
+                    committed_len = 0
+                complete_in_pool = committed_len // GROUP  # blocks 0..that-1 fully committed
                 watermark = self._flush_watermark_by_sink.get(sink_bid, 1)  # skip sink (k=0)
                 for k in range(watermark, min(complete_in_pool, bt_cols)):
                     bid = int(row[k])
@@ -445,10 +480,8 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
                         flush_block_ids.append(bid)
                 if complete_in_pool > watermark:
                     self._flush_watermark_by_sink[sink_bid] = complete_in_pool
-                self._prev_seq_len_by_sink[sink_bid] = sl
             # Drop tracking for requests no longer present (completed).
-            for stale in [s for s in self._prev_seq_len_by_sink if s not in seen_sinks]:
-                del self._prev_seq_len_by_sink[stale]
+            for stale in [s for s in self._flush_watermark_by_sink if s not in seen_sinks]:
                 self._flush_watermark_by_sink.pop(stale, None)
 
             # Trigger the flush on every layer's pool. Each impl quantises its
@@ -491,7 +524,6 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
                     if bid < is_sink_t.shape[0]:
                         is_sink_t[bid] = False
                 # Reset flush tracking so a recycled block_id starts fresh.
-                self._prev_seq_len_by_sink.pop(bid, None)
                 self._flush_watermark_by_sink.pop(bid, None)
 
             # (3) Allocate slots for any new block_ids (sinks + new tails).
@@ -530,6 +562,17 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
 
         max_blocks_per_req = (self._max_model_len + GROUP - 1) // GROUP
 
+        # A multi-query request with cached context (seq_len > query_len) is a
+        # speculative-decode verify step or a chunked-prefill continuation —
+        # its query tokens must attend over the cached K/V, not just each other.
+        # Detected here from CPU arrays (no GPU sync) so forward() can route it
+        # to the context-aware path. Fresh first-chunk prefill has
+        # seq_len == query_len on every row → flag stays False.
+        has_cached_multiquery = any(
+            query_lens_cpu[b] > 1 and seq_lens_cpu[b] > query_lens_cpu[b]
+            for b in range(min(B, len(query_lens_cpu)))
+        )
+
         return KVarNMetadata(
             seq_lens=cam.seq_lens,
             slot_mapping=cam.slot_mapping,
@@ -541,6 +584,7 @@ class KVarNMetadataBuilder(AttentionMetadataBuilder[KVarNMetadata]):
             is_prefill=(cam.max_query_len > 1),
             num_decodes=num_decodes,
             num_decode_tokens=num_decode_tokens,
+            has_cached_multiquery=has_cached_multiquery,
             seq_lens_cpu=seq_lens_cpu,
             block_table_cpu=None,  # not consumed downstream; build() uses block_table_np
             slot_mapping_cpu=slot_mapping_cpu,
@@ -1025,24 +1069,34 @@ class KVarNAttentionImpl(AttentionImpl["KVarNMetadata"]):
         for h in range(self.num_kv_heads):
             flat = self._flat_block(kv_cache, block_id, h)
 
-            # K side
+            # K side. K is packed at cfg.key_bits (8 // bits values per byte),
+            # so the per-channel row holds group // pack_k bytes — NOT a fixed
+            # group // 2. (group // 2 only happens to be right for 4-bit K.)
+            pack_k = 8 // cfg.key_bits
             k_packed = flat[cfg.k_packed_offset:cfg.k_packed_offset + cfg.k_packed_bytes
-                            ].view(D, group // 2)
+                            ].view(D, group // pack_k)
             s_col_K = flat[cfg.k_s_col_offset:cfg.k_s_col_offset + D * 2].view(torch.float16)
             zp_K = flat[cfg.k_zp_offset:cfg.k_zp_offset + D * 2].view(torch.float16)
             s_row_K = flat[cfg.k_s_row_offset:cfg.k_s_row_offset + group * 2].view(torch.float16)
-            K_rot_DG = kvarn_dequant_tile_k(k_packed, s_col_K, zp_K, s_row_K, group=group)
+            K_rot_DG = kvarn_dequant_tile_k(
+                k_packed, s_col_K, zp_K, s_row_K, group=group, bits=cfg.key_bits)
             # Un-rotate: [D, group] → [group, D] (= K rows-tokens), then ⋅H to undo rotation
             K_unrot = K_rot_DG.T @ H  # [group, D]
             K_out[:, h, :] = K_unrot.to(torch.float16)
 
-            # V side
+            # V side. V is packed at cfg.value_bits — for the default k4v2
+            # preset that is 2-bit (4 values per byte), so each token row holds
+            # D // pack_v bytes. The old fixed D // 2 assumed 4-bit V and broke
+            # k4v2 (view size mismatch), which is why this slow gather path had
+            # never worked for the default preset.
+            pack_v = 8 // cfg.value_bits
             v_packed = flat[cfg.v_packed_offset:cfg.v_packed_offset + cfg.v_packed_bytes
-                            ].view(group, D // 2)
+                            ].view(group, D // pack_v)
             s_col_V = flat[cfg.v_s_col_offset:cfg.v_s_col_offset + D * 2].view(torch.float16)
             s_row_V = flat[cfg.v_s_row_offset:cfg.v_s_row_offset + group * 2].view(torch.float16)
             zp_V = flat[cfg.v_zp_offset:cfg.v_zp_offset + group * 2].view(torch.float16)
-            V_rot_GD = kvarn_dequant_tile_v(v_packed, s_col_V, s_row_V, zp_V, head_dim=D)
+            V_rot_GD = kvarn_dequant_tile_v(
+                v_packed, s_col_V, s_row_V, zp_V, head_dim=D, bits=cfg.value_bits)
             V_unrot = V_rot_GD @ H  # [group, D]
             V_out[:, h, :] = V_unrot.to(torch.float16)
 
@@ -1384,9 +1438,15 @@ class KVarNAttentionImpl(AttentionImpl["KVarNMetadata"]):
         if not attn_metadata.is_prefill:
             attn_out = self._decode_path(q, kv_cache, attn_metadata)
         elif attn_metadata.num_decodes == 0:
-            k = key[:N].view(N, self.num_kv_heads, self.head_size)
-            v = value[:N].view(N, self.num_kv_heads, self.head_size)
-            attn_out = self._prefill_first_chunk(q, k, v, attn_metadata, kv_cache)
+            if attn_metadata.has_cached_multiquery:
+                # Speculative-decode verify (or chunked-prefill continuation):
+                # the query tokens have cached history that must be attended.
+                # _prefill_first_chunk would drop it; use the context-aware path.
+                attn_out = self._decode_path_slow(q, kv_cache, attn_metadata)
+            else:
+                k = key[:N].view(N, self.num_kv_heads, self.head_size)
+                v = value[:N].view(N, self.num_kv_heads, self.head_size)
+                attn_out = self._prefill_first_chunk(q, k, v, attn_metadata, kv_cache)
         else:
             # Mixed batch — split into decode + prefill portions, same as TurboQuant.
             attn_out = self._mixed_batch_path(
@@ -1630,9 +1690,17 @@ class KVarNAttentionImpl(AttentionImpl["KVarNMetadata"]):
             max_seq_len=attn_metadata.max_seq_len,  # WSL fix (PR #16): avoid per-step .item() D2H sync (global max is a safe upper bound for the prefill kernel)
             is_prefill=True,
         )
-        k_pref = k_all[num_decode_tokens:].view(-1, self.num_kv_heads, self.head_size)
-        v_pref = v_all[num_decode_tokens:].view(-1, self.num_kv_heads, self.head_size)
-        out[num_decode_tokens:] = self._prefill_first_chunk(
-            q[num_decode_tokens:], k_pref, v_pref, prefill_meta, kv_cache,
-        )
+        if attn_metadata.has_cached_multiquery:
+            # The multi-query (prefill-classified) requests here are speculative
+            # -decode verify steps / chunked-prefill continuations with cached
+            # history — attend over the cached K/V, not just the new tokens.
+            out[num_decode_tokens:] = self._decode_path_slow(
+                q[num_decode_tokens:], kv_cache, prefill_meta,
+            )
+        else:
+            k_pref = k_all[num_decode_tokens:].view(-1, self.num_kv_heads, self.head_size)
+            v_pref = v_all[num_decode_tokens:].view(-1, self.num_kv_heads, self.head_size)
+            out[num_decode_tokens:] = self._prefill_first_chunk(
+                q[num_decode_tokens:], k_pref, v_pref, prefill_meta, kv_cache,
+            )
         return out
