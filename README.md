@@ -162,6 +162,20 @@ once all of its tokens are accepted, so rejected draft tokens never corrupt hist
 
 ---
 
+### Running on WSL2
+
+KVarN works on WSL2, with two caveats.
+
+**1. Keep VRAM allocation under the residency limit.** On WSL2 (WDDM), allocating past the GPU's resident limit does not fail: Windows silently spills pages to system RAM, and identical CUDA kernels run at PCIe speed. Since KVarN adds an fp16 tail pool on top of weights and KV cache, the default `--gpu-memory-utilization 0.90` can cross that line on consumer cards. On a 24 GB RTX 4090 with Qwen2.5-7B-Instruct, `0.80` keeps everything resident and restores throughput (692 to 3523 tok/s at 128 concurrent decodes, quality unchanged; `0.85` still spilled).
+
+Diagnostic: if `nvidia-smi` shows 100% GPU utilization but power draw is near idle (about 100 W on a 4090), the cache has spilled. Power draw is the reliable signal; utilization is not.
+
+**2. UVA must be enabled.** vLLM disables UVA on WSL2 by policy, which prevents the engine from starting. Workaround: make `is_uva_available()` in `vllm/utils/platform_utils.py` return `True` on WSL2 (UVA itself works fine there). Re-apply after pulling.
+
+Background and measurements: [issue #15](https://github.com/huawei-csl/KVarN/issues/15).
+
+*Validated on WSL 2.7.3 (kernel 6.6.114), Windows 11 build 26100, NVIDIA driver 595.79. The residency limit and spill behavior are properties of the WDDM paravirtualization stack and may shift across driver versions.*
+
 ## How does KVarN work?
 
 <p align="center">
